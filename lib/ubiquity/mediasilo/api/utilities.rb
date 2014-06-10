@@ -808,19 +808,13 @@ module Ubiquity
             raise ArgumentError, "path is required to be a String or an Array. Path Class Name: #{path.class.name}"
           end
 
-          if path_contains_asset
-            asset_name = path_ary.pop
+          asset_name = path_ary.pop if path_contains_asset
 
-            # The name of the attribute to search the asset name for (Valid options are :title or :filename)
-            asset_name_field = options[:asset_name_field]
-          else
-            asset_name_field = :filename
-          end
-
-          # The first element should be the name of the project
+          # The first element must be the name of the project
           project_name = path_ary.shift
-          project = get_project_by_name(project_name, :return_first_match => true)
+          raise ArgumentError, 'path must contain a project name.' unless project_name
 
+          project = get_project_by_name(project_name, :return_first_match => true)
           return {
             :name_path => '/',
             :name_path_ary => path_ary,
@@ -848,6 +842,8 @@ module Ubiquity
           end
 
           if path_contains_asset
+            # The name of the attribute to search the asset name for (Valid options are :title or :filename)
+            asset_name_field = options[:asset_name_field] || :filename
             case asset_name_field.downcase.to_sym
               when :filename
                 asset = asset_by_filename(asset_name, project_id, asset_folder_id, :return_first_match => return_first_matching_asset)
@@ -1047,8 +1043,8 @@ module Ubiquity
         #   execute the MediaSilo api commands
         def path_delete(path, options = { })
           raise_exception_on_error = options.fetch(:raise_exception_on_error, true)
-          recursive = options.fetch(:recursive, false)
-          include_assets = options.fetch(:include_assets, false)
+          recursive = (options.fetch(:recursive, false) === true) ? true : false
+          include_assets = (options.fetch(:include_assets, false) === true) ? true : false
 
           path = path[1..-1] if path.start_with? '/' # Remove the leading slash if it is present
           path_ary = path.split('/') # Turn the path into an array of names
