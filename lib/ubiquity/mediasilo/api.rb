@@ -80,6 +80,24 @@ module Ubiquity
         params.merge(process_additional_parameters(add_params, args, options))
       end
 
+      # def get_all_pages
+      #   _response = response
+      #   responses = [ response ]
+      #   full_response = response.dup
+      #   all_results = response.result
+      #   loop do
+      #     break unless _response.next_page?
+      #     next_response = _response.request.get_next_page
+      #     _response = next_response
+      #     if _response.request.primary_key
+      #       other_fields = _response.body
+      #     end
+      #     all_results << _response.result
+      #   end
+      #   full_response.data = all_results
+      #   full_response.body['TOTAL'] = all_results.length
+      # end
+
       # @param [String] api_method
       # @param [Hash] api_method_arguments
       # @param [Hash] options
@@ -89,17 +107,17 @@ module Ubiquity
         _options = { :connection => connection }.merge(options)
         _return_full_response = options.fetch(:return_full_response, return_full_response_by_default)
 
-        if options[:paginated]
-          api_method_arguments
-        end
-
         api_method_arguments[:session] ||= session_key if options.fetch(:add_session_key, true)
         @request = API::Request.new(api_method, api_method_arguments, _options)
         #connection.send_api_request(@request)
         @response = request.send
 
+        if options[:paginated]
+          # TODO HANDLE PAGINATION
+        end
+
         logger.debug { "REQUEST: #{request.connection.http_request_as_hash.inspect}"}
-        logger.debug { "RESPONSE: #{response.raw.body}" }
+        logger.debug { "RESPONSE: #{response.body}" }
         return response if _return_full_response
         response.result
       end
@@ -256,6 +274,12 @@ module Ubiquity
         add_params = [ :folderid, :projectid, :copytags, :copycomments, :copymetadata ]
 
         params = merge_additional_parameters(params, add_params, args)
+        folder_id = params['folderid']
+        if folder_id and ( folder_id.to_s != '0')
+          params.delete('projectid')
+        else
+          params.delete('folderid') { }
+        end
         call_method('Asset.Copy', params)
       end
 
@@ -278,6 +302,12 @@ module Ubiquity
         add_params = [ :projectid, :folderid, :project, :folder ]
 
         params = merge_additional_parameters(params, add_params, args)
+        folder_id = params['folderid']
+        if folder_id and ( folder_id.to_s != '0')
+          params.delete('projectid')
+        else
+          params.delete('folderid') { }
+        end
         call_method('Asset.Create', params)
       end
 
@@ -453,7 +483,7 @@ module Ubiquity
         add_params = [ :tags, :orderby, :tagfilter, :returnonerror ]
 
         params = merge_additional_parameters(params, add_params, args)
-        call_method('Asset.GetByUUID', params)
+        call_method('Asset.GetByUUID', params, :primary_key_name => 'ASSETS')
       end
 
       # Retrieves all the assets in a playlist
@@ -461,7 +491,7 @@ module Ubiquity
       # @param [Integer] playlist_id The ID of the playlist you want the assets from
       def asset_get_by_playlist_id(playlist_id)
         params = { :playlist_id => playlist_id }
-        call_method('Asset.GetByPlaylistID', params)
+        call_method('Asset.GetByPlaylistID', params, :primary_key_name => 'ASSETS')
       end
 
       # Returns the processing progress as a percent value for the corresponding assets
@@ -514,8 +544,13 @@ module Ubiquity
         add_params = [ :folderid, :projectid ]
 
         params = merge_additional_parameters(params, add_params, args)
-        params.delete(:projectid) if params[:folderid]
-        call_method('Asset.GetByFolderID', params)
+        folder_id = params['folderid']
+        if folder_id and ( folder_id.to_s != '0')
+          params.delete('projectid')
+        else
+          params.delete('folderid') { }
+        end
+        call_method('Asset.Move', params)
       end
 
       # Removes tags from an asset (does not delete tags)
@@ -570,6 +605,25 @@ module Ubiquity
         }
         call_method('Asset.View', params)
       end
+      def event_get_all
+        call_method('Event.GetAll', { }, :primary_key_name => 'EVENTS')
+      end # event_get_all
+
+      def event_get_by_asset_uuid(asset_uuid)
+        params = {
+          'assetuuid' => asset_uuid
+        }
+        call_method('Event.GetByAssetUUID', params, :primary_key_name => 'EVENTS')
+      end # event_get_by_asset_uuid
+
+      # @return [Hash|nil]
+      def event_get_detail(event_uuid)
+        params = {
+          'uuid' => event_uuid
+        }
+        events = call_method('Event.GetDetail', params, :primary_key_name => 'EVENTS')
+        (events || [ ]).first
+      end # event_get_detail
 
       # Creates a new folder either in a project or in another folder
       #
@@ -676,7 +730,7 @@ module Ubiquity
         add_params = [ :key, :type ]
 
         params = merge_additional_parameters(params, add_params, args)
-        call_method('Metadata.GetByAssetUUID', params)
+        call_method('Metadata.GetByAssetUUID', params, :primary_key_name => 'ASSETS')
       end
 
       # Creates a new project
@@ -750,7 +804,7 @@ module Ubiquity
         ]
 
         params = merge_additional_parameters(params, add_params, args)
-        call_method('Quicklink.Create', params)
+        call_method('Quicklink.Create', params, :primary_key_name => 'QUICKLINKS')
       end
 
       # Edits an existing user
