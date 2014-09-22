@@ -1,5 +1,6 @@
 require 'ubiquity/mediasilo/api'
 require 'ubiquity/mediasilo/api/credentials'
+require 'open-uri' # for download_file
 
 class Exception
   def prefix_message(message_prefix = nil)
@@ -19,9 +20,29 @@ module Ubiquity
 
       class Utilities < MediaSilo::API
 
+        class ExtendedResponse < Hash
+
+          def success?
+            self[:success]
+          end
+
+          def error_message
+            self[:error_message]
+          end
+
+          def error_message=(v)
+            self[:error_message] = v
+          end
+
+          def to_s; inspect end
+
+        end
+
         DEFAULT_CASE_SENSITIVE_SEARCH = true
         DEFAULT_AUTO_RECONNECT = true
         DEFAULT_AUTO_CONNECT = true
+
+        DEFAULT_EVENT_MATCH_REGEX = /([A-Z0-9\p{Punct}\s]*)\s([a-z\s]*)\s([A-Z0-9\p{Punct}\s]*)\s?([a-z\s]*)\s?([A-Z0-9\p{Punct}\s]*)/
 
         attr_accessor :logger,
                       :default_case_sensitive_search,
@@ -80,7 +101,7 @@ module Ubiquity
 
           return_extended_response = options[:return_extended_response]
 
-          utility_params = [ :title, :description, :metadata ]
+          utility_params = [ :title, :description, :metadata, :tags_to_add_to_asset ]
           utility_args = process_additional_parameters(utility_params, args)
 
           # We can't set title or description when creating the asset, so if those parameters are set then save them and then do an asset edit after asset create
@@ -88,62 +109,61 @@ module Ubiquity
           asset_modify_params['title'] = utility_args.delete('title') if utility_args['title']
           asset_modify_params['description'] = utility_args.delete('description') if utility_args['description']
 
-          metadata ||= utility_args.delete('metadata') if utility_args['metadata']
+          metadata = utility_args.delete('metadata') { nil }
+          tags = utility_args.delete('tags_to_add_to_asset') { nil }
 
-          _response = { }
-          _response[:success] = false
+          _response = ExtendedResponse.new
 
           super(url, args)
-          _response[:asset_create_response] = response.body
+          _response[:asset_create_response] = response.body_parsed
           _response[:asset_create_success] = success?
           unless success?
             # We received an error code from MediaSilo during the Asset.Create call so return false
-            if return_extended_response
-              _response[:error_message] = "Error Creating Asset. #{error_message}"
-              return _response
-            end
-            return false
+            _response[:error_message] = "Error Creating Asset. #{error_message}"
+            return return_extended_response ? _response : false
           end
 
-          assets = response.body['ASSETS']
+          assets = response.body_parsed['ASSETS']
           first_asset = assets.first
           _response[:asset] = first_asset
 
           uuid = first_asset['uuid']
           _response[:uuid] = uuid
           unless uuid
-            if options[:return_full_response]
-              _response[:error_message] = "Error Getting Asset UUID from Response. #{response.body}"
-              return _response
-            end
-            return false
+            _response[:error_message] = "Error Getting Asset UUID from Response. #{response.body_parsed}"
+            return return_extended_response ? _response : false
           end
 
           if not asset_modify_params.empty?
             asset_edit(uuid, asset_modify_params)
-            _response[:asset_edit_response] = response.body
+            _response[:asset_edit_response] = response.body_parsed
             _response[:asset_edit_success] = response.success?
             unless success?
-              if return_extended_response
-                _response[:error_message] = "Error Editing Asset. #{error_message}"
-                return _response
-              end
-              return false
+              _response[:error_message] = "Error Editing Asset. #{error_message}"
+              return return_extended_response ? _response : false
             end
           end
 
           # Since we can't set the metadata during asset_create we do it here
           if not metadata.nil? and not metadata.empty?
             metadata_create(uuid, :metadata => metadata)
-            _response[:metadata_create_response] = response.respond_to?(:body) ? response.body : response
+            _response[:metadata_create_response] = response.body_parsed
             _response[:metadata_create_success] = success?
 
             unless success?
-              if return_extended_response
-                _response[:error_message] = "Error Creating Metadata. #{error_message}"
-                return _response
-              end
-              return false
+              _response[:error_message] = "Error Creating Metadata. #{error_message}"
+              return return_extended_response ? _response : false
+            end
+          end
+
+          if not tags.nil?
+            asset_add_tag(uuid, :tagname => tags)
+            _response[:tag_add_response] = response.body_parsed
+            _response[:tag_add_success] = success?
+
+            unless success?
+              _response[:error_message] = "Error Adding Tag(s). #{error_message}"
+              return return_extended_response ? _response : false
             end
           end
 
@@ -166,7 +186,7 @@ module Ubiquity
         # @note Most of the fields used by asset_advanced_search are text fields on cloud search and therefore a
         #   search match will match any PART of a word. (see @refine_asset_advanced_search_by_results)
         #
-        # @param [Symbol, String] search_field The field to search in
+        # @param [Symbol, String] search_field The field to search
         #   ["approvalstatus", "archivestatus", "averagerating", "datecreated", "datemodified", "description",
         #    "duration", "external", "filename", "height", "progress", "rating", "secure", "size", "thumbnail_large",
         #    "thumbnail_small", "title", "totalcomments", "transcriptstatus", "type", "uploaduser", "uuid", "width"]
@@ -178,8 +198,8 @@ module Ubiquity
         # @param [Hash] search_query A full query to pass (search_field and search_value will be ignored)
         # @param [Hash] search_params Additional parameters to pass to asset_advanced_search
         # @param [Hash] options
-        def asset_advanced_search_by(search_field, search_value, project_id = nil, folder_id = nil, search_query = nil, search_params = { }, options = { })
-          search_params ||= { }
+        def asset_advanced_search_by_field(search_field, search_value, project_id = nil, folder_id = nil, search_query = nil, search_params = { }, options = { })
+          search_params ||= options[:search_params] || { }
 
           # We can only search by folder id OR project id, not both
           if not(folder_id.nil? or folder_id == 0)
@@ -197,7 +217,22 @@ module Ubiquity
           assets = asset_advanced_search(search_query, search_params)
           assets
         end
-        alias :get_asset_by :asset_advanced_search_by
+        alias :get_asset_by :asset_advanced_search_by_field
+        alias :asset_get_by :asset_advanced_search_by_field
+
+        def asset_advanced_search_extended(search_query, args = { }, options = { })
+          asset_advanced_search(search_query, args)
+
+          # Ensure that we are working with just the assets by just using the results
+          assets = response.results
+
+          if options[:add_folder_crumbs_as_hash]
+            (assets || [ ]).map! do |asset|
+              add_folder_crumbs_as_hash_to_asset(asset)
+            end
+          end
+          assets
+        end
 
         # Refines asset_advanced_search results to exact (full string case sensitive) matches
         #
@@ -214,7 +249,7 @@ module Ubiquity
         # @option options [Boolean] :return_first_match (false)
         # @option options [Boolean] :match_full_string (true)
         # @option options [Boolean] :case_sensitive (#default_case_sensitive_search)
-        def refine_asset_advanced_search_by_results(search_value, field_name, assets, options)
+        def refine_asset_advanced_search_by_field_results(field_name, search_value, assets, options)
           return unless assets
           return_first_match = options.fetch(:return_first_match, false)
           match_full_string = options.fetch(:match_full_string, true)
@@ -231,44 +266,175 @@ module Ubiquity
           assets
         end
 
-        # Searches for assets by filename
+        # Add folder Crumbs as Hash fixes the issue where folders with the same name will be collapsed into a single key
+        # The following fix will instead key the folder crumbs by id so that the key values will remain unique
         #
-        # @param [String] asset_name The asset filename to search for
-        # @param [Integer] project_id The project to limit the search to
-        # @param [Integer] folder_id the folder to limit the search to
-        # @param [Hash] options
-        # @option options [Boolean] :return_first_match (false)
-        # @option options [Boolean] :match_full_string (true)
-        # @option options [Boolean] :case_sensitive (#default_case_sensitive_search)
-        # @return [<Hash>, Hash, nil]
-        #   If the :return_first_match option is true then a hash of the asset will be returned if a match is found.
-        #   Otherwise an array of assets is returned if a match is found
-        #   nil will be returned if no match was found
-        def asset_by_filename(asset_name, project_id = nil, folder_id = nil, options = { })
-          assets = get_asset_by(:filename, asset_name, project_id, folder_id, nil, { }, options)
-          refine_asset_advanced_search_by_results(asset_name, 'filename', assets, options)
+        #> JSON.parse("[{'Test':37382,'Test':73351,'Test3':73352,'Test':73353}]".gsub("'", '"'))
+        #=> [{"Test"=>73353, "Test3"=>73352}]
+        #
+        #> JSON.parse("[{'Test':37382,'Test':73351,'Test3':73352,'Test':73353}]".gsub("'", '"').gsub(",", '},{'))
+        #=> [{"Test"=>37382}, {"Test"=>73351}, {"Test3"=>73352}, {"Test"=>73353}]
+        #
+        #> Hash[JSON.parse("[{'Test':37382,'Test':73351,'Test3':73352,'Test':73353}]".gsub("'", '"').gsub(",", '},{')).map { |crumb|  [crumb.values.first, crumb.keys.first] }]
+        #=> {37382=>"Test", 73351=>"Test", 73352=>"Test3", 73353=>"Test"}
+        #
+        # @param [Hash] asset Asset as returned by asset_advanced_search
+        # @return [Hash] asset
+        def add_folder_crumbs_as_hash_to_asset(asset)
+          folder_crumbs_text = asset['searchdata']['foldercrumbs'] rescue nil
+          asset['searchdata']['folder_crumbs_as_hash'] = convert_asset_advanced_search_foldercrumbs_to_hash(folder_crumbs_text)
+          asset
         end
-        alias :asset_by_name :asset_by_filename
-        alias :get_asset_by_name :asset_by_filename
 
-        # Searches for assets by title
+        # Converts asset advanced search foldercrumbs text into a hash keyed by id
         #
-        # @param [String] asset_title The asset title to search for
-        # @param [Integer] project_id The project to limit the search to
-        # @param [Integer] folder_id the folder to limit the search to
-        # @param [Hash] options
-        # @option options [Boolean] :return_first_match (false)
-        # @option options [Boolean] :match_full_string (true)
-        # @option options [Boolean] :case_sensitive (#default_case_sensitive_search)
-        # @return [<Hash>, Hash, nil]
-        #   If the :return_first_match option is true then a hash of the asset will be returned if a match is found.
-        #   Otherwise an array of assets is returned if a match is found
-        #   nil will be returned if no match was found
-        def asset_by_title(asset_title, project_id = nil, folder_id = nil, options = { })
-          assets = get_asset_by(:title, asset_title, project_id, folder_id, nil, { }, options)
-          refine_asset_advanced_search_by_results(asset_title, 'filename', assets, options)
+        # [{'Test':37382,'Test':73351,'Test3':73352,'Test':73353}]
+        #     will be converted to
+        # {37382=>"Test", 73351=>"Test", 73352=>"Test3", 73353=>"Test"}
+        #
+        # @param [String] folder_crumbs_text
+        # @return [Hash]
+        def convert_asset_advanced_search_foldercrumbs_to_hash(folder_crumbs_text)
+          return unless folder_crumbs_text
+
+          # foldercrumbs uses single quotes which won't parse, so we replace those with double quotes and replace comma's
+          # with '},{' so that instead of one hash we have multiple hashes so that common keys won't collide
+          folder_crumbs_as_hashes_json = folder_crumbs_text.gsub("'", '"').gsub(',', '},{')
+
+          folder_crumbs_as_hashes = JSON.parse(folder_crumbs_as_hashes_json)
+
+          Hash[folder_crumbs_as_hashes.map { |crumb| [crumb.values.first, crumb.keys.first] }]
         end
-        alias :get_asset_by_title :asset_by_title
+
+        # @param [Hash] args
+        # @option args [String] :asset_uuid REQUIRED
+        # @option args [String|Integer] :destination_project_id
+        # @option args [String|Integer] :destination_folder_id
+        # @option args [String] :destination_path
+        # @option args [Boolean] :create_path_if_not_exist
+        def asset_copy_extended(args = { })
+            _response = ExtendedResponse.new
+
+            asset_uuid = args[:asset_uuid]
+
+            destination_folder_id = args[:destination_folder_id]
+            destination_project_id = args[:destination_project_id]
+
+            unless destination_project_id || destination_folder_id
+              destination_path = args[:destination_path]
+              unless destination_path
+                _response[:error_message] = 'Missing required parameter. :destination_project_id, :destination_folder_id, or :destination_path is required.'
+                return _response
+              end
+
+              create_path_if_not_exist = args.fetch(:create_path_if_not_exist) { args.fetch(:create_path_if_not_exists, false) }
+              if create_path_if_not_exist
+                create_path_result = path_create(destination_path, false)
+                unless success?
+                  _response[:error_message] = "Error Creating Path. #{create_path_result}"
+                  return _response
+                end
+
+                destination_project_id = create_path_result[:project_id]
+                destination_folder_id = create_path_result[:parent_folder_id]
+              else
+                check_path_result = check_path(destination_path)
+                unless check_path_result[:missing_path].empty?
+                  _response[:error_message] = "Path not found. '#{destination_path}' Check Path Results: #{check_path_result}"
+                  return _response
+                end
+
+                existing = check_path_result[:existing]
+
+                destination_project = existing[:project] || { }
+                destination_project_id = destination_project['PROJECTID']
+
+                destination_path_folders = existing[:folders]
+                destination_folder = destination_path_folders.last || { }
+                destination_folder_id = destination_folder['FOLDERID']
+              end
+              #destination_folder_id = nil if destination_folder_id.to_s == '0'
+            end
+
+
+            asset_copy_args = args
+            if destination_folder_id
+              asset_copy_args[:folder_id] = destination_folder_id
+            elsif destination_project_id
+              asset_copy_args[:project_id] = destination_project_id
+            end
+
+            create_asset_if_not_exists = args[:create_asset_if_not_exists] || args[:create_asset_if_not_exist]
+            if create_asset_if_not_exists
+              if create_asset_if_not_exists.is_a?(Hash)
+                search_field_name = create_asset_if_not_exists[:search_field] || create_asset_if_not_exists[:search_field_name]
+                search_value = create_asset_if_not_exists[:search_value]
+                search_query = create_asset_if_not_exists[:search_query]
+                search_args = create_asset_if_not_exists[:search_args]
+
+                search_project_id = create_asset_if_not_exists[:search_project_id]
+                search_project_id = destination_project_id if search_project_id.nil?
+
+                search_folder_id = create_asset_if_not_exists[:search_folder_id]
+                search_folder_id = destination_folder_id if search_folder_id.nil?
+              else
+                search_field_name = 'filename'
+                source_assets = asset_get_by_uuid(asset_uuid)
+                source_asset = (source_assets.is_a?(Array) ? source_assets.first : source_assets)
+                unless success?
+                  _response[:response] = response.body_parsed
+                  _response[:error_message] = 'Error retrieving source asset filename while searching for existing asset.'
+                  return _response
+                end
+
+                search_value = source_asset['filename']
+                search_project_id = destination_project_id
+                search_folder_id = destination_folder_id
+                search_query = nil
+                search_args = { }
+              end
+              _response[:search_field_name] = search_field_name
+              _response[:search_value] = search_value
+              _response[:search_project_id] = search_project_id
+              _response[:search_folder_id] = search_folder_id
+              _response[:search_query] = search_query
+              _response[:search_params] = search_args
+
+              get_asset_by_response = asset_get_by(search_field_name, search_value, search_project_id, search_folder_id, search_query, search_params)
+              unless success?
+                _response[:response] = response.body_parsed
+                _response[:error_message] = 'Error searching for existing asset.'
+                return _response
+              end
+
+              found_assets = get_asset_by_response['ASSETS'] if get_asset_by_response.is_a?(Hash)
+              found_assets ||= [ ]
+              found_asset = found_assets.first
+
+
+              _response[:found_existing_asset] = !!found_asset
+              destination_asset_uuid = found_asset['uuid'] if found_asset
+            end
+
+            destination_asset_uuid ||= asset_copy(asset_uuid, asset_copy_args)
+            if destination_asset_uuid
+              _response[:uuid] = destination_asset_uuid
+              _response[:response] = response.body_parsed
+            else
+              _response[:response] = response.body_parsed
+              _response[:error_message] = "Error copying asset.\nResponse: #{response.body_parsed}\nMS UUID: #{asset_uuid}"
+              return _response
+            end
+
+            if success?
+              _response[:success] = true
+            else
+              _response[:error_message] = 'Error Copying Asset.'
+            end
+
+
+            _response
+          end # asset_copy
 
         # A version of asset_create that returns an extended response.
         #
@@ -286,7 +452,8 @@ module Ubiquity
           # utility_params = [ :title, :description, :metadata ]
           # utility_args = process_additional_parameters(utility_params, args)
           #
-          # # We can't set title or description when creating the asset, so if those parameters are set then save them and then do an asset edit after asset create
+          # # We can't set title or description when creating the asset, so if those parameters are set then save them
+          # # and then do an asset edit after asset create
           # asset_modify_params = { }
           # asset_modify_params['title'] = utility_args.delete('title') if utility_args['title']
           # asset_modify_params['description'] = utility_args.delete('description') if utility_args['description']
@@ -297,7 +464,7 @@ module Ubiquity
           # _response[:success] = false
           #
           # asset_create(url, args)
-          # _response[:asset_create_response] = response.body
+          # _response[:asset_create_response] = response.body_parsed
           # _response[:asset_create_success] = success?
           # unless success?
           #   # We received an error code from MediaSilo during the Asset.Create call so return false
@@ -305,7 +472,7 @@ module Ubiquity
           #   return _response
           # end
           #
-          # assets = response.body['ASSETS']
+          # assets = response.body_parsed['ASSETS']
           # first_asset = assets.first
           # _response[:asset] = first_asset
           #
@@ -318,7 +485,7 @@ module Ubiquity
           #
           # if not asset_modify_params.empty?
           #   response = asset_edit(uuid, asset_modify_params)
-          #   _response[:asset_edit_response] = response.body
+          #   _response[:asset_edit_response] = response.body_parsed
           #   _response[:asset_edit_success] = response.success?
           #   unless success?
           #     _response[:error_message] = "Error Editing Asset. #{error_message}"
@@ -329,7 +496,7 @@ module Ubiquity
           # # Since we can't set the metadata during asset_create we do it here
           # if not metadata.nil? and not metadata.empty?
           #   response = metadata_create(uuid, :metadata => metadata)
-          #   _response[:metadata_create_response] = response.body
+          #   _response[:metadata_create_response] = response.body_parsed
           #   _response[:metadata_create_success] = success?
           #   unless success?
           #     _response[:error_message] = "Error Creating Metadata. #{error_message}"
@@ -411,7 +578,63 @@ module Ubiquity
             return false
           end
         end
-        alias :asset_create_using_file_path :asset_create_using_file_path
+        alias :asset_create_using_file_path :asset_create_using_path
+
+        # Downloads a file from a URI or file location and saves it to a local path
+        #
+        # @param [String] download_file_path The source path of the file being downloaded
+        # @param [String] destination_file_path The destination path for the file being downloaded
+        # @param [Boolean] overwrite Determines if the destination file will be overwritten if it is found to exist
+        #
+        # @return [Hash]
+        #   * :download_file_path [String] The source path of the file being downloaded
+        #   * :overwrite [Boolean] The value of the overwrite parameter when the method was called
+        #   * :file_downloaded [Boolean] Indicates if the file was downloaded, will be false if overwrite was true and the file existed
+        #   * :destination_file_existed [String|Boolean] The value will be 'unknown' if overwrite is true because the file exist check will not have been run inside of the method
+        #   * :destination_file_path [String] The destination path for the file being downloaded
+        def download_file(download_file_path, destination_file_path, overwrite = false)
+          file_existed = 'unknown'
+          if overwrite or not(file_existed = File.exists?(destination_file_path))
+            File.open(destination_file_path, 'wb') { |tf|
+              open(download_file_path) { |sf| tf.write sf.read }
+            }
+            file_downloaded = true
+          else
+            file_downloaded = false
+          end
+          return { :download_file_path => download_file_path, :overwrite => overwrite, :file_downloaded => file_downloaded, :destination_file_existed => file_existed, :destination_file_path => destination_file_path }
+        end
+
+        # @param [String|Hash] asset
+        # @param [String] destination_file_path
+        # @param [Boolean] overwrite
+        # @return [Hash] see (MediaSilo#download_file)
+        def asset_download_proxy_file(asset, destination_file_path, overwrite = false)
+          asset = asset_get_by_uuid(asset) if asset.is_a? String
+          asset = asset.first if asset.is_a?(Array)
+          file_to_download = asset['fileaccess']['proxy']
+          asset_download_resource(file_to_download, destination_file_path, overwrite)
+        end
+
+        # @param [String] download_file_path
+        # @param [String] destination_file_path
+        # @param [Boolean] overwrite
+        def asset_download_resource(download_file_path, destination_file_path, overwrite = false)
+          destination_file_path = File.join(destination_file_path, File.basename(URI.decode(download_file_path))) if File.directory? destination_file_path
+          download_file(download_file_path, destination_file_path, overwrite)
+        end
+
+        # @param [String|Hash] asset
+        # @param [String] destination_file_path
+        # @param [Boolean] overwrite
+        # @return [Hash] see (MediaSilo#download_file)
+        def asset_download_source_file(asset, destination_file_path, overwrite = false)
+          asset = asset_get_by_uuid(asset) if asset.is_a? String
+          asset = asset.first if asset.is_a?(Array)
+          file_to_download = asset['fileaccess']['source']
+          file_to_download = URI.encode(file_to_download)
+          asset_download_resource(file_to_download, destination_file_path, overwrite)
+        end
 
         # @param [String] asset_uuid
         # @param [Hash] args A hash of arguments
@@ -447,7 +670,7 @@ module Ubiquity
           unless args.empty?
             result = asset_edit(asset_uuid, args)
             _response[:asset_edit_result] = result
-            _response[:asset_edit_response] = response.body
+            _response[:asset_edit_response] = response.body_parsed
             _response[:asset_edit_success] = success?
             unless success?
               _response[:error_message] = "Error Editing Asset. #{error_message}"
@@ -466,7 +689,7 @@ module Ubiquity
               result = metadata_create_if_not_exists(asset_uuid, ms_metadata)
             end
             _response[:metadata_edit_result] = result
-            _response[:metadata_edit_response] = response.body
+            _response[:metadata_edit_response] = response.body_parsed
             _response[:metadata_edit_success] = success?
             unless success?
               _response[:error_message] = "Error Editing Asset's Metadata. #{error_message}"
@@ -485,7 +708,7 @@ module Ubiquity
 
           if add_quicklink_to_asset
             add_quicklink_to_asset.is_a?(Hash) ? quicklink_create(asset_uuid, add_quicklink_to_asset) : quicklink_create(asset_uuid)
-            _response[:quicklink_create_response] = response.body
+            _response[:quicklink_create_response] = response.body_parsed
             _response[:quicklink_create_success] = success?
             unless success?
               _response[:error_message] = "Error Adding Quicklink to Asset. #{error_message}"
@@ -493,6 +716,112 @@ module Ubiquity
             end
           end
 
+          _response[:success] = true
+          _response
+        end
+        
+        # Searches for assets by filename
+        #
+        # @param [String] asset_name The asset filename to search for
+        # @param [Integer] project_id The project to limit the search to
+        # @param [Integer] folder_id the folder to limit the search to
+        # @param [Hash] options
+        # @option options [Boolean] :return_first_match (false)
+        # @option options [Boolean] :match_full_string (true)
+        # @option options [Boolean] :case_sensitive (#default_case_sensitive_search)
+        # @return [<Hash>, Hash, nil]
+        #   If the :return_first_match option is true then a hash of the asset will be returned if a match is found.
+        #   Otherwise an array of assets is returned if a match is found
+        #   nil will be returned if no match was found
+        def asset_get_by_filename(asset_name, project_id = nil, folder_id = nil, options = { })
+          assets = asset_get_by(:filename, asset_name, project_id, folder_id, nil, { }, options)
+          refine_asset_advanced_search_by_field_results('filename', asset_name, assets, options)
+        end
+        alias :asset_by_name :asset_get_by_filename
+        alias :get_asset_by_name :asset_get_by_filename
+
+        # Searches for assets by title
+        #
+        # @param [String] asset_title The asset title to search for
+        # @param [Integer] project_id The project to limit the search to
+        # @param [Integer] folder_id the folder to limit the search to
+        # @param [Hash] options
+        # @option options [Boolean] :return_first_match (false)
+        # @option options [Boolean] :match_full_string (true)
+        # @option options [Boolean] :case_sensitive (#default_case_sensitive_search)
+        # @return [<Hash>, Hash, nil]
+        #   If the :return_first_match option is true then a hash of the asset will be returned if a match is found.
+        #   Otherwise an array of assets is returned if a match is found
+        #   nil will be returned if no match was found
+        def asset_get_by_title(asset_title, project_id = nil, folder_id = nil, options = { })
+          assets = asset_get_by(:title, asset_title, project_id, folder_id, nil, { }, options)
+          refine_asset_advanced_search_by_field_results('title', asset_title, assets, options)
+        end
+        alias :get_asset_by_title :asset_get_by_title
+
+        # An extended version of asset_move
+        # Adds the ability to move an asset using a path instead of a project/folder id
+        #
+        # @param [String] asset_uuid
+        # @param [Hash] args
+        # @option args [String, Integer] :destination_project_id
+        # @option args [String, Integer] :destination_folder_id
+        # @option args [String, Integer] :destination_path
+        # @option args [Boolean] :create_path_if_not_exists
+        def asset_move_extended(asset_uuid, args = { })
+          destination_project_id = args[:destination_project_id]
+          destination_folder_id = args[:destination_folder_id]
+
+          _response = ExtendedResponse.new
+          unless destination_project_id || destination_folder_id
+            destination_path = args[:destination_path]
+            unless destination_path
+              _response[:error_message] = 'Missing required parameter. :destination_project_id, :destination_folder_id, or :destination_path is required.'
+              return _response
+            end
+
+            create_path_if_not_exist = args[:create_path_if_not_exists]
+            if create_path_if_not_exist
+              create_path_result = path_create(destination_path, false)
+              _response[:path_create_response] = create_path_result
+              unless create_path_result
+                _response[:error_message] = "Error Creating Path. #{create_path_result}"
+                return _response
+              end
+
+              destination_project_id = create_path_result[:project_id]
+              destination_folder_id = create_path_result[:parent_folder_id]
+            else
+              check_path_result = check_path(destination_path)
+              _response[:check_path_response] = check_path_result
+              unless check_path_result[:missing_path].empty?
+                _response[:error_message] = "Path not found. '#{destination_path}' Check Path Results: #{check_path_result}"
+                return _response
+              end
+
+              existing = check_path_result[:existing]
+
+              destination_project = existing[:project] || { }
+              destination_project_id = destination_project['PROJECTID']
+
+              destination_path_folders = existing[:folders]
+              destination_folder = destination_path_folders.last || { }
+              destination_folder_id = destination_folder['FOLDERID']
+            end
+            #destination_folder_id = nil if destination_folder_id.to_s == '0'
+          end
+
+          args_out = {
+            :projectid => destination_project_id,
+            :folderid => destination_folder_id
+          }
+          _response[:asset_move_args] = args_out
+          asset_move(asset_uuid, args_out)
+          _response[:asset_move_response] = response
+          unless success?
+            _response[:error_message] = "Error Moving Asset. #{error_message}"
+            return _response
+          end
           _response[:success] = true
           _response
         end
@@ -774,7 +1103,7 @@ module Ubiquity
 
         # Takes a file system type path and resolves the MediaSilo id's for each of the elements of that path which exist
         #
-        # The method check_path uses this method to determine the existing part of a path
+        # The method check_path uses this method to determine what part of a path does or doesn't exist
         #
         # @param [String] path The path of the asset on MediaSilo {project_name}/{folder_name} or
         #   {project_name}/{folder_name}/{asset_name}
@@ -837,34 +1166,36 @@ module Ubiquity
             name_path_ary.concat(parsed_folders[:name_path_ary])
             asset_folder_id = parsed_folders[:id_path_ary].last if path_contains_asset
             folders = parsed_folders.fetch(:folder_ary, [ ])
-          else
-            folders = [ ]
-          end
 
-          if path_contains_asset
-            # The name of the attribute to search the asset name for (Valid options are :title or :filename)
-            asset_name_field = options[:asset_name_field] || :filename
-            case asset_name_field.downcase.to_sym
-              when :filename
-                asset = asset_by_filename(asset_name, project_id, asset_folder_id, :return_first_match => return_first_matching_asset)
-              when :title
-                asset = asset_by_title(asset_name, project_id, asset_folder_id, :return_first_match => return_first_matching_asset)
-              else
-                raise ArgumentError, ":asset_name_field value is not a valid option. It must be :title or :filename. Current value: #{asset_name_field}"
+            if path_contains_asset
+              # The name of the attribute to search the asset name for (Valid options are :title or :filename)
+              asset_name_field = options[:asset_name_field] || :filename
+              case asset_name_field.to_s.downcase.to_sym
+                when :filename
+                  asset = asset_get_by_filename(asset_name, project_id, asset_folder_id, :return_first_match => return_first_matching_asset)
+                when :title
+                  asset = asset_get_by_title(asset_name, project_id, asset_folder_id, :return_first_match => return_first_matching_asset)
+                else
+                  raise ArgumentError, ":asset_name_field value is not a valid option. It must be :title or :filename. Current value: #{asset_name_field}"
+              end
             end
-          end
-          if asset
-            if asset.is_a?(Array)
-              # Just add the whole array to the array
-              id_path_ary << asset.map { |_asset| _asset['uuid'] }
-              name_path_ary << asset.map { |_asset| _asset['filename'] }
+            if asset
+              if asset.is_a?(Array)
+                # Just add the whole array to the array
+                id_path_ary << asset.map { |_asset| _asset['uuid'] }
+                name_path_ary << asset.map { |_asset| _asset['filename'] }
+              else
+                id_path_ary << asset['uuid']
+                name_path_ary << File.basename(asset['filename'])
+              end
             else
-              id_path_ary << asset['uuid']
-              name_path_ary << File.basename(asset['filename'])
+              asset = nil
             end
           else
             asset = nil
+            folders = [ ]
           end
+
 
           return {
             :name_path => "/#{name_path_ary.join('/')}",
@@ -878,8 +1209,7 @@ module Ubiquity
             :folders => folders
           }
         end
-        
-        
+
         # Calls check_path to see if any part of a project/folder/asset path are missing from MediaSilo and creates any part that is missing
         #
         # @param [String] path The path to create inside of MediaSilo
@@ -971,7 +1301,7 @@ module Ubiquity
                 begin
                   logger.debug { "Creating folder #{folder_name} parent id: #{parent_folder_id} project id: #{project_id}" }
                   new_folder = folder_create(folder_name, project_id, parent_folder_id)
-                  logger.debug { "New Folder: #{PP.pp(new_folder, '')}" }
+                  logger.debug { "New Folder: #{new_folder.inspect}" }
                   parent_folder_id = new_folder['id']
                   logger.debug { "Folder Created #{new_folder} - #{parent_folder_id}" }
                 rescue => e
@@ -1173,11 +1503,449 @@ module Ubiquity
           return true
         end
 
+        # # @param [String] source_string
+        # # @param [String] search_for_string
+        # # @param [Symbol] method Any string method that will take a string as an argument. Ex: :eql?, :start_with?, :end_with?
+        # def compare_strings(source_string, search_for_string, method = :eql?); return source_string.send(method, search_for_string); end # compare_strings
+
+        # Searches asset events for event(s) meeting the search criteria
+        #
+        # @param [String] asset_uuid
+        # @param [Hash] search_criteria
+        # @option search_criteria [String] :event_code
+        # @option search_criteria [Hash] :description
+
+        # @param [Symbol|Integer|String] occurrence_to_search_for The results are in a stack from newest to oldest, so first matches the newest record and last matches the oldest record
+        # @option occurrence_to_search_for [Symbol|String] :all
+        # @option occurrence_to_search_for [SymbolString] :first Return the most recent record found
+        # @option occurrence_to_search_for [Symbol|String] :last Return the oldest record found
+        #
+        # @param [Hash] options
+        # @option options [Boolean] :include_event_detail (false)
+        # @option options [Boolean] :include_event_user (false)
+        #
+        #
+        # QUICKLINK_CREATE_VIDEO
+        # TAG_ADD_TO_VIDEO
+        # TAG_REMOVE_FROM_VIDEO
+        # VIDEO_DOWNLOAD
+        # VIDEO_VIEW
+        # VIDEO_UPLOAD_FTP
+        #
+        def search_asset_events(asset_uuid, search_criteria = { }, occurrence_to_search_for = :all, options = { })
+          return asset_uuid.collect { |cau| search_asset_events(cau, search_criteria, occurrence_to_search_for, options) } if asset_uuid.is_a?(Array)
+          options[:asset_uuid] = asset_uuid
+          return search_events(search_criteria, occurrence_to_search_for, options)
+        end # search_asset_events
+
+        def search_events(search_criteria = { }, occurrence_to_search_for = :all, options = { })
+
+          args_out = {
+            :search_criteria => search_criteria,
+            :occurrence_to_search_for => occurrence_to_search_for,
+            :options => options
+          }
+
+          events = EventSearch.new(args_out)
+
+          include_event_detail = options.fetch(:include_event_detail, false)
+          include_event_user = options.fetch(:include_event_user, false)
+
+          user_cache = { }
+          events.map do |event|
+            if include_event_detail
+              event_uuid = event['uuid']
+              event['detail'] = event_get_detail(event_uuid) if event_uuid
+            end
+
+            if include_event_user
+              user_id = event['userid']
+              if user_id
+                user = user_cache[user_id] ||= user_get_by_id(user_id)
+                event['user'] = user # if user
+              end
+            end
+
+            event
+          end
+
+          return events
+
+          # events = options.fetch(:events, false)
+          #
+          # asset_uuid = options.fetch(:asset_uuid, false)
+          # events ||= event_get_by_asset_uuid(asset_uuid) if asset_uuid
+          # events ||= event_get_all
+          # events ||= [ ]
+          #
+          # # Events are in an array(stack) going from newest to oldest
+          # if occurrence_to_search_for.is_a?(Symbol) || occurrence_to_search_for.is_a?(String)
+          #   case occurrence_to_search_for.downcase.to_sym
+          #     when :first, :newest
+          #       occurrence_to_search_for = 1
+          #     when :last, :oldest
+          #       occurrence_to_search_for = -1
+          #     when :all
+          #       occurrence_to_search_for = nil
+          #   end
+          # else
+          #   occurrence_to_search_for = 1 if occurrence_to_search_for == 0
+          # end
+          #
+          # #if search_criteria.empty? or events.empty?
+          # #  return events.first if occurrence_to_search_for == 1
+          # #  return events.last  if occurrence_to_search_for == -1
+          # #  return events if occurrence_to_search_for == -2
+          # #end
+          #
+          # event_code_to_search_for = search_criteria.fetch(:event_code, false)
+          # event_code_to_search_for.upcase! if event_code_to_search_for.is_a?(String)
+          # event_code_search_method = options.fetch(:event_code_search_method, :eql?)
+          #
+          # time_to_search_for = search_criteria.fetch(:time, false)
+          # case time_to_search_for
+          #   when false
+          #     #
+          #   else
+          #     time_start = time_stop = time_to_search_for
+          # end
+          #
+          # description_search = search_criteria.fetch(:description, false)
+          # description_search = false if description_search.respond_to?(:empty?) and description_search.empty?
+          #
+          # if description_search
+          #   username_to_search_for ||= description_search.fetch(:username, false)
+          #   username_to_search_for.upcase! if username_to_search_for
+          #   username_search_method = options.fetch(:username_search_method, :eql?)
+          #
+          #   action_to_search_for ||= description_search.fetch(:action, false)
+          #   action_to_search_for.downcase! if action_to_search_for
+          #   action_search_method = options.fetch(:action_search_method, :eql?)
+          #
+          #   object1_to_search_for ||= description_search.fetch(:tag,
+          #                                                      description_search.fetch(:filename,
+          #                                                                               description_search.fetch(:object1, false)))
+          #   object1_to_search_for.upcase! if object1_to_search_for
+          #   object1_search_method = options.fetch(:object1_search_method, :eql?)
+          #
+          #   object2_to_search_for ||= description_search.fetch(:filename,
+          #                                                      description_search.fetch(:object2, false))
+          #   object2_to_search_for.upcase! if object2_to_search_for
+          #   object2_search_method = options.fetch(:object2_search_method, :eql?)
+          # end
+          #
+          # include_event_detail = options.fetch(:include_event_detail, false)
+          # include_event_user = options.fetch(:include_event_user, false)
+          # user_cache = { }
+          #
+          # found_events = [ ]
+          # current_occurrence = 0
+          # occurrence_found = false
+          # events.each { |event|
+          #   event_code = event['code']
+          #   logger.debug { "No code match: #{event_code} !#{event_code_search_method} #{event_code_to_search_for}" } and next unless compare_strings(event_code, event_code_to_search_for, event_code_search_method) if event_code_to_search_for
+          #   logger.debug { "Code match: #{event_code} #{event_code_search_method} #{event_code_to_search_for}" }
+          #
+          #   if time_to_search_for
+          #     event_time = event['timestamp']
+          #     next unless event_time >= time_start and event_time <= time_stop
+          #   end
+          #
+          #
+          #   if description_search
+          #     case event_code
+          #       when 'PRESENTATION_VIEWED'
+          #         # "Presentation THE SOMETHING COLLECTION 2013 - 2014 was viewed"
+          #         regex = false
+          #       when 'PRESENTATION_VIDEO_VIEWED'
+          #         # "LSGA779L-1 A PYTHAGOREAN THEORIES ON SCREENER.MOV was viewed in presentation THE SOMETHING COLLECTION 2013 - 2014"
+          #         regex = false
+          #       when 'QUICKLINK_VIEW_EMAIL'
+          #         # "user@domain.com viewed 726358-006_DOUG OBERHELMAN CATERPILLER_1.MOV via QuickLink"
+          #         regex = false
+          #       else
+          #         regex = DEFAULT_EVENT_MATCH_REGEX
+          #     end
+          #     if regex
+          #       match = regex.match(event.fetch('description', '')).to_a
+          #       @logger.debug { "Parsed Event Description: #{match.inspect}" }
+          #       if match
+          #         #description_hash = /(?<username>\w*)\s{1}(?<action>[a-z\s]*)\s{1}(?<object1>[A-Z0-9\p{Punct}\s]*)\s?(?<preposition>[a-z\s]*)\s?(?<object2>[A-Z0-9\p{Punct}\s]*)/.match(event.fetch('description', ''))
+          #         username, action, object1, preposition, object2 = match.to_a
+          #         #next unless description_hash['username'] == username_to_search_for if username_to_search_for
+          #         #next unless description_hash['action'] == action_to_search_for     if action_to_search_for
+          #         #next unless description_hash['object1'].strip == object1_to_search_for   if object1_to_search_for
+          #         #next unless description_hash['object2'] == object2_to_search_for if object2_to_search_for
+          #
+          #         next unless compare_strings(username, username_to_search_for, username_search_method) if username_to_search_for
+          #         next unless compare_strings(action, action_to_search_for, action_search_method)     if action_to_search_for
+          #         next unless compare_strings(object1.strip, object1_to_search_for, object1_search_method)   if object1_to_search_for
+          #         next unless compare_strings(object2, object2_to_search_for, object2_search_method) if object2_to_search_for
+          #       end
+          #     end
+          #   end
+          #
+          #   if include_event_detail
+          #     event_uuid = event['uuid']
+          #     event['detail'] = event_get_detail(event_uuid) if event_uuid
+          #   end
+          #
+          #   if include_event_user
+          #     user_id = event['userid']
+          #     if user_id
+          #       user = user_cache[user_id] ||= user_get_by_id(user_id)
+          #       event['user'] = user # if user
+          #     end
+          #   end
+          #
+          #   current_occurrence += 1
+          #   found_events << event
+          #
+          #   (occurrence_found = true) and break if occurrence_to_search_for and (current_occurrence == occurrence_to_search_for)
+          #
+          # }
+          # return false if found_events.empty?
+          # if occurrence_to_search_for.is_a?(Integer)
+          #   return found_events.last if occurrence_found or (occurrence_to_search_for == -1)
+          #   return found_events[occurrence_to_search_for] # Could be negative
+          # end
+          # return found_events
+        end # search_events
+
         # @!endgroup
       end
 
     end
 
+  end
+
+end
+
+class EventSearch
+
+  attr_accessor :logger
+
+  attr_accessor :found_events,
+                :current_occurrence,
+                :user_cache,
+
+                # Parameters set by arguments
+                :include_event_detail,
+                :include_event_user,
+
+                :events,
+                :search_criteria,
+                :occurrence_to_search_for,
+
+                :event_code_to_search_for,
+                :event_code_search_method,
+
+                :description_to_search_for,
+
+                :username_to_search_for,
+                :username_search_method,
+
+                :action_to_search_for,
+                :action_search_method,
+
+                :object1_to_search_for,
+                :object1_search_method,
+
+                :object2_to_search_for,
+                :object2_search_method,
+
+                :time_to_search_for,
+                :time_start,
+                :time_end
+
+  def initialize(args = { })
+    initialize_logger(args)
+
+    @found_events = [ ]
+    @current_occurrence = 0
+    @user_cache = { }
+
+    @events = args[:events]
+    raise ArgumentError, ':events is a required argument.' unless events
+
+    @search_criteria = args[:search_critera]
+    raise ArgumentError, ':search_criteria is a required argument.' unless search_criteria
+
+    process_search_criteria
+    initialize_occurrence_to_search_for(args)
+    initialize_time_to_search_for(args)
+  end
+
+  def initialize_time_to_search_for(args = { })
+    @time_to_search_for = search_criteria.fetch(:time, false)
+    case time_to_search_for
+      when false
+        #
+      else
+        @time_start = @time_end = time_to_search_for
+    end
+
+  end
+
+  def initialize_logger(args = { })
+    @logger = args[:logger] || Logger.new(args[:log_to] || STDOUT)
+  end
+
+  def initialize_occurrence_to_search_for(args = { })
+    @occurrence_to_search_for = args[:occurrence_to_search_for]
+    if occurrence_to_search_for.is_a?(Symbol) || occurrence_to_search_for.is_a?(String)
+      case occurrence_to_search_for.downcase.to_sym
+        when :first, :newest
+          @occurrence_to_search_for = 1
+        when :last, :oldest
+          @occurrence_to_search_for = -1
+        when :all
+          @occurrence_to_search_for = nil
+      end
+    else
+      @occurrence_to_search_for = 1 if occurrence_to_search_for == 0
+    end
+
+  end
+
+
+
+  def process_search_criteria(search_criteria = @search_criteria)
+    @event_code_to_search_for = search_criteria.fetch(:event_code, false)
+    @event_code_to_search_for.upcase! if event_code_to_search_for.is_a?(String)
+    @event_code_search_method = options.fetch(:event_code_search_method, :eql?)
+
+    # time_to_search_for = search_criteria.fetch(:time, false)
+    # case time_to_search_for
+    #   when false
+    #     #
+    #   else
+    #     time_start = time_stop = time_to_search_for
+    # end
+
+    @description_to_search_for = search_criteria.fetch(:description, false)
+    @description_to_search_for = false if description_to_search_for.respond_to?(:empty?) and description_to_search_for.empty?
+
+    if description_to_search_for.is_a?(Hash)
+      @username_to_search_for ||= description_to_search_for.fetch(:username, false)
+      @username_to_search_for.upcase! if username_to_search_for
+      @username_search_method = options.fetch(:username_search_method, :eql?)
+
+      @action_to_search_for ||= description_to_search_for.fetch(:action, false)
+      @action_to_search_for.downcase! if action_to_search_for
+      @action_search_method = options.fetch(:action_search_method, :eql?)
+
+      @object1_to_search_for ||= description_to_search_for.fetch(:tag) do
+        description_to_search_for.fetch(:filename) do
+          description_to_search_for.fetch(:object1, false)
+        end
+      end
+
+
+      @object1_to_search_for.upcase! if object1_to_search_for
+      @object1_search_method = options.fetch(:object1_search_method, :eql?)
+
+      @object2_to_search_for ||= description_to_search_for.fetch(:filename) do
+        description_to_search_for.fetch(:object2, false)
+      end
+      @object2_to_search_for.upcase! if object2_to_search_for
+      @object2_search_method = options.fetch(:object2_search_method, :eql?)
+    end
+
+  end
+
+  def match_found?
+    !found_events.empty?
+  end
+
+  # @param [String] source_string
+  # @param [String] search_for_string
+  # @param [Symbol] method Any string method that will take a string as an argument. Ex: :eql?, :start_with?, :end_with?
+  def compare_strings(source_string, search_for_string, method = :eql?); return source_string.send(method, search_for_string); end # compare_strings
+
+  def search_description
+
+  end
+
+  def event_meets_critiera?(event = @event)
+    @event_code = event['code']
+    unless compare_strings(event_code, event_code_to_search_for, event_code_search_method)
+      logger.debug { "No code match: #{event_code} !#{event_code_search_method} #{event_code_to_search_for}" }
+      return
+    end if event_code_to_search_for
+
+    logger.debug { "Code match: #{event_code} #{event_code_search_method} #{event_code_to_search_for}" }
+
+    if time_to_search_for
+      event_time = event['timestamp']
+      return unless event_time >= time_start and event_time <= time_end
+    end
+
+
+    if description_search
+      case event_code
+        when 'PRESENTATION_VIEWED'
+          # "Presentation THE SOMETHING COLLECTION 2013 - 2014 was viewed"
+          regex = false
+        when 'PRESENTATION_VIDEO_VIEWED'
+          # "LSGA779L-1 A PYTHAGOREAN THEORIES ON SCREENER.MOV was viewed in presentation THE SOMETHING COLLECTION 2013 - 2014"
+          regex = false
+        when 'QUICKLINK_VIEW_EMAIL'
+          # "user@domain.com viewed 726358-006_DOUG OBERHELMAN CATERPILLER_1.MOV via QuickLink"
+          regex = false
+        else
+          regex = DEFAULT_EVENT_MATCH_REGEX
+      end
+      if regex
+        match = regex.match(event.fetch('description', '')).to_a
+        @logger.debug { "Parsed Event Description: #{match.inspect}" }
+        if match
+          #description_hash = /(?<username>\w*)\s{1}(?<action>[a-z\s]*)\s{1}(?<object1>[A-Z0-9\p{Punct}\s]*)\s?(?<preposition>[a-z\s]*)\s?(?<object2>[A-Z0-9\p{Punct}\s]*)/.match(event.fetch('description', ''))
+          username, action, object1, preposition, object2 = match.to_a
+          #next unless description_hash['username'] == username_to_search_for if username_to_search_for
+          #next unless description_hash['action'] == action_to_search_for     if action_to_search_for
+          #next unless description_hash['object1'].strip == object1_to_search_for   if object1_to_search_for
+          #next unless description_hash['object2'] == object2_to_search_for if object2_to_search_for
+
+          return unless compare_strings(username, username_to_search_for, username_search_method) if username_to_search_for
+          return unless compare_strings(action, action_to_search_for, action_search_method)     if action_to_search_for
+          return unless compare_strings(object1.strip, object1_to_search_for, object1_search_method)   if object1_to_search_for
+          return unless compare_strings(object2, object2_to_search_for, object2_search_method) if object2_to_search_for
+        end
+      end
+    end
+
+    return true
+  end
+
+
+  def run
+    # Events are in an array(stack) going from newest to oldest
+
+    #if search_criteria.empty? or events.empty?
+    #  return events.first if occurrence_to_search_for == 1
+    #  return events.last  if occurrence_to_search_for == -1
+    #  return events if occurrence_to_search_for == -2
+    #end
+
+    occurrence_found = false
+    events.each { |event|
+      @event = event
+      next unless event_meets_criteria?
+
+      current_occurrence += 1
+      found_events << event
+
+      (occurrence_found = true) and break if occurrence_to_search_for and (current_occurrence == occurrence_to_search_for)
+
+    }
+    return false unless match_found?
+
+    if occurrence_to_search_for.is_a?(Integer)
+      return found_events.last if occurrence_found or (occurrence_to_search_for == -1)
+      return found_events[occurrence_to_search_for] # Could be negative
+    end
+    return found_events
   end
 
 end

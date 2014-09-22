@@ -17,8 +17,8 @@ module Ubiquity
         attr_reader :responses, :response
 
         def initialize(api_method_name, api_method_arguments = { }, options = { })
-          @initial_api_arguments = api_method_arguments.dup
-          @initial_options = options.dup
+          @initial_api_arguments = api_method_arguments.dup.freeze
+          @initial_options = options.dup.freeze
 
           @api_method_name = api_method_name
           @api_method_arguments = api_method_arguments
@@ -78,22 +78,22 @@ module Ubiquity
         end
 
         def get_next_page(_request = self)
-          page = _request.api_method_arguments[:page]
-          first_page = _request.options[:first_page]
-          if page.nil? or page == -1 or (page.respond_to?(:downcase) and [:all, 'all'].include? page.downcase)
+          page_number = _request.api_method_arguments[:page]
+          #first_page = _request.options[:first_page]
+          if page_number.nil? or page_number == -1 or (page_number.respond_to?(:downcase) and [:all, 'all'].include? page_number.downcase)
 
             # asset.search and asset.advancedsearch results come from Amazon Cloud Search and use 0 instead of 1 as the first page number
             if %w(asset.cloudsearch asset.cloudadvancedsearch asset.search asset.advancedsearch).include? api_method_name.downcase
-              page = 0
+              page_number = 0
               pageoffset = 1
             else
-              page = 1
+              page_number = 1
               pageoffset = 0
             end
           else
-            page += 1
+            page_number += 1
           end
-          get_page(page)
+          get_page(page_number)
         end
 
         def get_page(page)
@@ -108,6 +108,7 @@ module Ubiquity
           pages << get_next_page
           pages
         end
+
 
         def send
           @http_response = connection.send_api_request(self)

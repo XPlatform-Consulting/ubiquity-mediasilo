@@ -31,7 +31,7 @@ module Ubiquity
         end
 
         def inspect
-          @as_string ||= %({ :hostname => #{hostname},  :username => #{username}, :password => #{@redact_password ? '**REDACTED***' : password} })
+          @as_string ||= %({ :hostname => #{hostname},  :username => #{username}, :password => #{@redact_password ? '*REDACTED*' : password} })
         end
         alias :to_s :inspect
 
