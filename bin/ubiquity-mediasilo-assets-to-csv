@@ -1,0 +1,236 @@
+#!/usr/bin/env ruby
+$LOAD_PATH.unshift(File.expand_path('../../lib', __FILE__))
+require 'ubiquity/mediasilo/api/utilities/cli'
+
+LOGGING_LEVELS = {
+    :debug => Logger::DEBUG,
+    :info => Logger::INFO,
+    :warn => Logger::WARN,
+    :error => Logger::ERROR,
+    :fatal => Logger::FATAL
+}
+
+options = {
+  :log_to => STDOUT,
+  :log_level => Logger::DEBUG,
+  :options_file_path => "~/.options/#{File.basename($0, '.*')}",
+  :cache_file_path => '/tmp/mediasilo_account_assets.yaml',
+}
+arguments = ARGV
+op = OptionParser.new
+op.on('--mediasilo-hostname HOSTNAME', 'The hostname to use when authenticating with the MediaSilo API.') { |v| options[:hostname] = v }
+op.on('--mediasilo-username USERNAME', 'The username to use when authenticating with the MediaSilo API.') { |v| options[:username] = v }
+op.on('--mediasilo-password PASSWORD', 'The password to use when authenticating with the MediaSilo API.') { |v| options[:password] = v }
+op.on('--[no-]cache-file-path PATH', 'The name of the method to invoke.') { |v| options[:cache_file_path] = v }
+op.on('--csv-file-path PATH', 'The path and filename of the CSV file to create.') { |v| options[:destination_file_path] = v }
+op.on('--search-string STRING', 'Optionally you can provide a search string and only ')
+op.on('--log-to FILENAME', 'Log file location.', "\tdefault: STDERR") { |v| options[:log_to] = v }
+op.on('--log-level LEVEL', LOGGING_LEVELS.keys, "Logging level. Available Options: #{LOGGING_LEVELS.keys.join(', ')}",
+      "\tdefault: #{LOGGING_LEVELS.invert[options[:log_level]]}") { |v| options[:log_level] = LOGGING_LEVELS[v] }
+op.on('--[no-]options-file [FILENAME]', 'Path to a file which contains default command line arguments.', "\tdefault: #{options[:options_file_path]}" ) { |v| options[:options_file_path] = v}
+op.on('--[no-]pretty-print', 'Determines if the output will be formatted for easier human readability.') { |v| options[:pretty_print] = v }
+op.on_tail('-h', '--help', 'Show this message.') { puts op; exit }
+op.parse!(arguments.dup)
+
+options_file_path = options[:options_file_path]
+options_file_path = File.expand_path(options_file_path) if options_file_path rescue nil
+# Make sure that options from the command line override those from the options file
+op.parse!(arguments.dup) if op.load(options_file_path)
+
+# reporter = Ubiquity::MediaSilo::Reporter.new(options)
+cli = Ubiquity::MediaSilo::API::Utilities::CLI.new(options)
+@logger = options[:logger] = cli.initialize_logger(options)
+def logger; @logger end
+
+#@ms = Ubiquity::MediaSilo.new(options)
+#@ms = Ubiquity::MediaSilo::API.new(options)
+@ms = cli.initialize_api(cli.initial_args)
+def ms; @ms end
+#ms.logger.level = Logger::DEBUG
+#ms.connect
+
+require 'csv'
+require 'yaml'
+cache_file_path = options[:cache_file_path]
+def get_assets_using_search_string(search_string)
+#response = ms.asset_advanced_search("( and metadatakeys:'Module ID' (and datecreated:1398211200..1403654400) )", { 'page' => -1, 'searchGlobal' => true }, { :add_folder_crumbs_as_hash => true })
+#response = ms.asset_advanced_search("( and metadatakeys:'Module ID' (and datecreated:1398211200..) )", { 'page' => 1, 'searchGlobal' => true }, { :add_folder_crumbs_as_hash => true })
+  #response = ms.asset_advanced_search("( and metadatakeys:'Module ID' (and datecreated:1398211200..) )", { 'page' => -1 }, { :add_folder_crumbs_as_hash => true })
+  response = ms.asset_advanced_search(search_string, { 'page' => -1 }, { :add_folder_crumbs_as_hash => true })
+  assets = response['ASSETS']
+  assets.map! { |asset| asset['metadata'] = ms.metadata_get_by_asset_uuid(asset['uuid']); asset }
+end
+
+def get_all_assets_for_folder(project_id, folder, options = { })
+  include_sub_folders = options[:include_subfolders]
+  folder_id = folder['FOLDERID']
+
+
+  folder_assets = ms.asset_get_by_folder_id(folder_id, options)
+  return [ ] unless folder_assets
+  assets = folder_assets.dup
+
+  if options[:include_search_data]
+    parent_search_data = options[:search_data] || { 'workspaceid' => project_id, 'foldercrumbs' => [ ] }
+
+    folder_name = folder['FOLDERNAME']
+    folder_crumb = { folder_id => folder_name }
+
+    search_data = parent_search_data.dup
+    search_data['foldercrumbs'] << folder_crumb
+    options[:search_data] = search_data
+    assets.map { |asset| asset['searchdata'] = search_data }
+  end
+
+  if include_sub_folders
+    folders = ms.folder_get_by_parent_id(project_id, folder_id)
+    folders.each { |_folder| assets += get_all_assets_for_folder(project_id, _folder, options) }
+  end
+  assets
+end
+
+def get_all_assets_for_project(project, options = { })
+  include_sub_folders = options[:include_sub_folders]
+
+  project_id = project['PROJECTID']
+  project_name = project['NAME']
+
+  project_assets = ms.asset_get_by_project_id(project_id, options)
+  return [ ] unless ms.success?
+  assets = project_assets.dup
+
+  if options[:include_search_data]
+    search_data = { 'workspaceid' => project_id.to_s, 'workspacename' => project_name, 'folderid' => '0', 'foldername' => '', 'foldercrumbs' => [ { project_id => project_name } ] }
+    assets.map { |asset| asset['searchdata'] = search_data }
+    options[:search_data] = search_data
+  end
+
+  if include_sub_folders
+    folders = ms.folder_get_by_parent_id(project_id, 0)
+    folders.each { |folder| assets += get_all_assets_for_folder(project_id, folder, options) }
+  end
+
+  assets.map do |asset|
+    search_data = asset['searchdata']
+    foldercrumbs = search_data['foldercrumbs']
+    folder_crumbs_as_hash = Hash[ foldercrumbs.map { |foldercrumb| [ foldercrumb.keys.first, foldercrumb.values.first ] }  ]
+    #folder_crumbs_as_hash = Hash[ foldercrumbs.keys.zip(foldercrumbs.values) ]
+    search_data['folder_crumbs_as_hash'] = folder_crumbs_as_hash
+    asset['searchdata'] = search_data
+    asset
+  end if options[:include_search_data]
+
+  assets
+end
+
+
+def get_assets(projects = nil)
+  projects ||= begin
+    ms.project_get_all.last(5) #.map { |project| project['PROJECTID'] }
+  end
+
+  _assets = [ ]
+  [*projects].each { |project|
+    _assets += get_all_assets_for_project(project, :include_search_data => true, :include_sub_folders => true, page: 1, pagesize: 1)
+  }
+  _assets
+end
+
+cache_file_path = options[:cache_file_path]
+assets = nil
+assets = YAML.load(File.read(cache_file_path)) if cache_file_path and File.exists?(cache_file_path)
+assets ||= begin
+  #ms.connect
+  search_string = options[:search_string]
+  _assets = search_string ? get_assets : get_assets_using_search_string(search_string)
+  File.open(cache_file_path, 'w') { |f| f.write(YAML.dump(_assets)) } if cache_file_path
+  _assets
+end
+
+
+def asset_to_record(asset)
+  metadata = asset.delete('metadata') { [ ] }
+  file_access = asset.delete('fileaccess') { { } }
+  searchdata = asset.delete('searchdata') { { } }
+  tags = asset.delete('tags') { [ ] }
+
+  project_id = searchdata['workspaceid']
+  project_name = searchdata['workspacename']
+
+  #metadata = ms.metadata_transform_hash(metadata)
+  metadata = Hash[ metadata.map { |cm| [ "metadata:#{cm['key']}", cm['value'] ] } ]
+  #folder_crumbs = searchdata.delete('foldercrumbs')
+
+  folder_crumbs_hash = searchdata.delete('folder_crumbs_as_hash')
+  mediasilo_path = "#{folder_crumbs_hash.values.join('\\')}\\#{asset['title']}"
+
+  stream = file_access.delete('stream')
+  stream = stream ? Hash[ stream.map { |k,v| [ "stream:#{k}", v ] } ] : { }
+
+  asset['tags'] = JSON.generate(tags)
+  asset['mediasilo_path'] = mediasilo_path
+  asset['project_name'] = project_name
+  asset.merge!(searchdata)
+  asset.merge!(file_access)
+  asset.merge!(metadata)
+  asset.merge!(stream)
+
+  asset
+end
+
+def assets_to_table(assets)
+  fields = [ ]
+  assets.map! do |asset|
+    _asset = asset_to_record(asset)
+    fields = fields | _asset.keys
+    _asset
+  end
+  fields = fields.sort
+  table = [ fields ] + assets.map { |asset| fields.map { |field_name| asset[field_name] } }
+  table
+end
+
+
+def output_to_csv(data, destination_file_path)
+  logger.info { "Outputting to CSV File. '#{destination_file_path}'" }
+  total_lines = data.length
+  CSV.open(destination_file_path, 'w') { |writer|
+    data.each_with_index do |row, idx|
+      logger.debug { "Writing Row #{idx+1} of #{total_lines}" }
+      writer << row
+    end
+  }
+end
+
+#csv_destination_file_path = File.expand_path('~/Google Drive/tmp/mediasilo_assets.csv')
+csv_destination_file_path = options[:destination_file_path] || '/tmp/mediasilo_assets.csv'
+output_to_csv(assets_to_table(assets.dup), csv_destination_file_path)
+
+def build_summary(assets)
+  # puts response['TOTAL']
+  abp = {}
+  assets.each do |asset|
+    #puts "Asset (#{asset.class.name}): #{asset.inspect}"
+    searchdata = asset['searchdata']
+    project_id = searchdata['workspaceid']
+    project_name = searchdata['workspacename']
+    folder_crumbs_hash = searchdata['folder_crumbs_as_hash']
+
+    project = abp["#{project_name} (#{project_id})"] ||= [ ]
+
+    project << asset
+    #project << asset['title']
+    #project << "#{asset['uuid'].ljust(30)} | #{"#{folder_crumbs_hash.values.join('\\')}\\#{asset['title']}".ljust(91)} | #{asset['filename'].ljust(70)} | #{asset['datecreated'].ljust(26)} | #{asset['datemodified']}"
+  end
+  #pp abp
+  abp.sort.map { |pn, assets| puts "#{pn.ljust(45)} :\n#{assets.join("\n")}" }
+  #abp.sort.map { |pn, assets| puts "#{pn.ljust(45)} :\n#{assets.sort.join("\n")}" }
+  abp.sort.map { |pn, assets| puts "#{pn.ljust(70)} : #{assets.length}" } # Count By Project Name
+  #total = response['TOTAL']
+  #puts total
+  #pp assets
+
+end
+
+
+
