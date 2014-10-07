@@ -296,6 +296,7 @@ module Ubiquity
       # @option args [String] :folder The name of the folder you want the asset placed in, if a project is also passed
       #   then only subfolders in that project are used
       def asset_create(url, args = { })
+        url.gsub!('+', '%2B') # A fix for an issue where pluses in the url cause issues when creating an asset
         params = {
           :url => url
         }
