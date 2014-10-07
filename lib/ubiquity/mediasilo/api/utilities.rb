@@ -512,19 +512,19 @@ module Ubiquity
         # Creates an asset building any missing parts of the path (Project/Folder/Asset)
         #
         # Required Parameters
-        #   :file_url
-        #   :file_path or :full_file_path
+        #   :url
+        #   :mediasilo_path or :file_path
         #
         # Optional Parameters
         #   :metadata
         #   :overwrite_existing_asset
         def asset_create_using_path(args = { })
 
-          file_url = args[:file_url]
-          raise ArgumentError ':file_url is a required parameter.' unless file_url
+          file_url = args[:url] || args[:file_url]
+          raise ArgumentError ':url is a required parameter.' unless file_url
 
-          file_path = args[:file_path]
-          raise ArgumentError ':file_path is a required parameter.' unless file_path
+          file_path = args[:mediasilo_path] || args[:file_path]
+          raise ArgumentError ':mediasilo_path is a required parameter.' unless file_path
 
           ms_metadata = args[:metadata]
 
@@ -652,7 +652,7 @@ module Ubiquity
             asset_uuid = args.delete(:asset_uuid) { false }
             raise ArgumentError, 'Error Editing Asset. Missing required argument :asset_uuid' unless asset_uuid
           else
-            args.dup
+            args = args.dup
           end
 
           ms_metadata = args.delete(:metadata) { false }
