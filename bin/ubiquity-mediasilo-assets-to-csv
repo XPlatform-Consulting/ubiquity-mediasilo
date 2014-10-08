@@ -3,11 +3,11 @@ $LOAD_PATH.unshift(File.expand_path('../../lib', __FILE__))
 require 'ubiquity/mediasilo/api/utilities/cli'
 
 LOGGING_LEVELS = {
-    :debug => Logger::DEBUG,
-    :info => Logger::INFO,
-    :warn => Logger::WARN,
-    :error => Logger::ERROR,
-    :fatal => Logger::FATAL
+  :debug => Logger::DEBUG,
+  :info => Logger::INFO,
+  :warn => Logger::WARN,
+  :error => Logger::ERROR,
+  :fatal => Logger::FATAL
 }
 
 options = {
@@ -142,7 +142,7 @@ assets = YAML.load(File.read(cache_file_path)) if cache_file_path and File.exist
 assets ||= begin
   #ms.connect
   search_string = options[:search_string]
-  _assets = search_string ? get_assets : get_assets_using_search_string(search_string)
+  _assets = search_string ? get_assets_using_search_string(search_string) : get_assets
   File.open(cache_file_path, 'w') { |f| f.write(YAML.dump(_assets)) } if cache_file_path
   _assets
 end
