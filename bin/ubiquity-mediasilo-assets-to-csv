@@ -1,5 +1,7 @@
 #!/usr/bin/env ruby
 $LOAD_PATH.unshift(File.expand_path('../../lib', __FILE__))
+#require 'pp'
+
 require 'ubiquity/mediasilo/api/utilities/cli'
 
 LOGGING_LEVELS = {
@@ -44,6 +46,7 @@ def logger; @logger end
 
 #@ms = Ubiquity::MediaSilo.new(options)
 #@ms = Ubiquity::MediaSilo::API.new(options)
+#@ms = Ubiquity::MediaSilo::API::Utilities.new(cli.initial_args)
 @ms = cli.initialize_api(cli.initial_args)
 def ms; @ms end
 #ms.logger.level = Logger::DEBUG
@@ -51,7 +54,6 @@ def ms; @ms end
 
 require 'csv'
 require 'yaml'
-cache_file_path = options[:cache_file_path]
 def get_assets_using_search_string(search_string)
 #response = ms.asset_advanced_search("( and metadatakeys:'Module ID' (and datecreated:1398211200..1403654400) )", { 'page' => -1, 'searchGlobal' => true }, { :add_folder_crumbs_as_hash => true })
 #response = ms.asset_advanced_search("( and metadatakeys:'Module ID' (and datecreated:1398211200..) )", { 'page' => 1, 'searchGlobal' => true }, { :add_folder_crumbs_as_hash => true })
@@ -102,7 +104,7 @@ def get_all_assets_for_project(project, options = { })
   if options[:include_search_data]
     search_data = { 'workspaceid' => project_id.to_s, 'workspacename' => project_name, 'folderid' => '0', 'foldername' => '', 'foldercrumbs' => [ { project_id => project_name } ] }
     assets.map { |asset| asset['searchdata'] = search_data }
-    options[:search_data] = search_data
+    options[:search_data] = search_data.dup
   end
 
   if include_sub_folders
@@ -110,15 +112,15 @@ def get_all_assets_for_project(project, options = { })
     folders.each { |folder| assets += get_all_assets_for_folder(project_id, folder, options) }
   end
 
-  assets.map do |asset|
-    search_data = asset['searchdata']
-    foldercrumbs = search_data['foldercrumbs']
-    folder_crumbs_as_hash = Hash[ foldercrumbs.map { |foldercrumb| foldercrumb.first }  ]
-    #folder_crumbs_as_hash = Hash[ foldercrumbs.keys.zip(foldercrumbs.values) ]
-    search_data['folder_crumbs_as_hash'] = folder_crumbs_as_hash
-    asset['searchdata'] = search_data
-    asset
-  end if options[:include_search_data]
+  # assets.map! do |asset|
+  #   search_data = asset['searchdata']
+  #   foldercrumbs = search_data['foldercrumbs']
+  #   folder_crumbs_as_hash = Hash[ foldercrumbs.map { |foldercrumb| foldercrumb.first }  ]
+  #   #folder_crumbs_as_hash = Hash[ foldercrumbs.keys.zip(foldercrumbs.values) ]
+  #   search_data['folder_crumbs_as_hash'] = folder_crumbs_as_hash
+  #   asset['searchdata'] = search_data
+  #   asset
+  # end if options[:include_search_data]
 
   assets
 end
@@ -126,7 +128,7 @@ end
 
 def get_assets(projects = nil)
   projects ||= begin
-    ms.project_get_all.last(5) #.map { |project| project['PROJECTID'] }
+    ms.project_get_all.last(35) #.map { |project| project['PROJECTID'] }
   end
 
   _assets = [ ]
@@ -148,7 +150,8 @@ assets ||= begin
 end
 
 
-def asset_to_record(asset)
+def asset_to_record(_asset)
+  asset = _asset.dup
   metadata = asset.delete('metadata') { [ ] }
   file_access = asset.delete('fileaccess') { { } }
   searchdata = asset.delete('searchdata') { { } }
@@ -159,11 +162,13 @@ def asset_to_record(asset)
 
   #metadata = ms.metadata_transform_hash(metadata)
   metadata = Hash[ metadata.map { |cm| [ "metadata:#{cm['key']}", cm['value'] ] } ]
-  #folder_crumbs = searchdata.delete('foldercrumbs')
+  foldercrumbs = searchdata['foldercrumbs']
+  folder_crumbs_hash = Hash[ foldercrumbs.map { |foldercrumb| foldercrumb.first }  ]
+  #folder_crumbs_hash = searchdata.delete('folder_crumbs_as_hash')
+  #puts "Folder Crumbs Hash: #{folder_crumbs_hash}"
+  #pp _asset
 
-  folder_crumbs_hash = searchdata.delete('folder_crumbs_as_hash')
   mediasilo_path = "#{folder_crumbs_hash.values.join('\\')}\\#{asset['title']}"
-
   stream = file_access.delete('stream')
   stream = stream ? Hash[ stream.map { |k,v| [ "stream:#{k}", v ] } ] : { }
 
