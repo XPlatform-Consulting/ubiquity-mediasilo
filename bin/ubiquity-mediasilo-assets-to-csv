@@ -128,7 +128,7 @@ end
 
 def get_assets(projects = nil)
   projects ||= begin
-    ms.project_get_all.last(35) #.map { |project| project['PROJECTID'] }
+    ms.project_get_all #.last(35) #.map { |project| project['PROJECTID'] }
   end
 
   _assets = [ ]
