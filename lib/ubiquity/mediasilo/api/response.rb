@@ -32,10 +32,11 @@ module Ubiquity
           end
         end
 
-        attr_accessor :raw, :primary_key_name
+        attr_accessor :raw, :primary_key_name, :request
 
         def initialize(args = { })
           @primary_key_name = args[:primary_key_name]
+          @request = args[:request]
         end
 
         # @return [Hash]
@@ -130,7 +131,7 @@ module Ubiquity
         end # responded_with_error
 
         def next_page?
-          success? and body_parsed.fetch['TOTAL', 0] > 0
+          success? and body_parsed.fetch('TOTAL', 0) > 0
         end
 
       end
