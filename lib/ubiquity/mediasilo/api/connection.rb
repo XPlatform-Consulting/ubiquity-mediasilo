@@ -13,7 +13,7 @@ module Ubiquity
         attr_reader :host_address, :base_uri, :parsed_base_uri
         attr_reader :http, :read_timeout, :use_ssl, :verify_ssl
 
-        attr_accessor :session_key
+        attr_accessor :session_key, :logger
 
         def default_host_address
           @default_host_address ||= DEFAULT_HOST_ADDRESS
@@ -24,6 +24,8 @@ module Ubiquity
         end
 
         def initialize(args = { })
+          initialize_logger(args)
+
           @host_address = args[:host_address] || default_host_address
 
           parsed_host_address = URI.parse(host_address)
@@ -39,6 +41,15 @@ module Ubiquity
 
           @parsed_base_uri = URI.parse(base_uri)
           initialize_http
+        end
+
+        def initialize_logger(args = { })
+          @logger = args[:logger] || begin
+            _logger = Logger.new(args[:log_to] || STDOUT)
+            log_level = args[:log_level]
+            _logger.level = log_level if log_level
+            _logger
+          end
         end
 
         def initialize_http
@@ -81,12 +92,16 @@ module Ubiquity
 
           @http_request = http_request
 
+          logger.debug { "[CONNECTION] REQUEST: #{http_request.method} #{http_request.path}#{http_request.body_exist? ? "\n#{http_request.body}" : ''}" }
+
           @request_time_start = Time.now
 
           @http_response = http.request(@http_request)
 
           @request_time_end = Time.now
           @request_time_elapsed = @request_time_end - @request_time_start
+
+          logger.debug { "[CONNECTION] RESPONSE: #{@http_response.inspect}#{@http_response.body || true ? "\n#{@http_response.body}" : ''}\nResponse Time #{sprintf("%d min %0.4f sec", @request_time_elapsed / 60, @request_time_elapsed % 60)}"}
 
           @http_response
         end
