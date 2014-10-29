@@ -22,6 +22,7 @@ module Ubiquity
 
           @api_method_name = api_method_name
           @api_method_arguments = api_method_arguments
+          convert_page_number
           @options = options
 
           @connection = options[:connection]
@@ -77,22 +78,44 @@ module Ubiquity
           response.next_page
         end
 
-        def get_next_page(_request = self)
-          page_number = _request.api_method_arguments[:page]
+        def convert_page_number
+          page_number = api_method_arguments[:page] ||= api_method_arguments.delete('page') { }
           #first_page = _request.options[:first_page]
           if page_number.nil? or page_number == -1 or (page_number.respond_to?(:downcase) and [:all, 'all'].include? page_number.downcase)
 
             # asset.search and asset.advancedsearch results come from Amazon Cloud Search and use 0 instead of 1 as the first page number
             if %w(asset.cloudsearch asset.cloudadvancedsearch asset.search asset.advancedsearch).include? api_method_name.downcase
               page_number = 0
-              pageoffset = 1
+              #pageoffset = 1
             else
               page_number = 1
-              pageoffset = 0
+              #pageoffset = 0
             end
-          else
-            page_number += 1
           end
+          api_method_arguments[:page] = page_number if page_number
+        end
+
+        def get_next_page(_request = self)
+          #puts "API METHOD ARGUMENTS: #{_request.api_method_arguments.inspect}"
+          #page_number = _request.api_method_arguments[:page] ||= _request.api_method_arguments.delete('page') { }
+          # #first_page = _request.options[:first_page]
+          # if page_number.nil? or page_number == -1 or (page_number.respond_to?(:downcase) and [:all, 'all'].include? page_number.downcase)
+          #
+          #   # asset.search and asset.advancedsearch results come from Amazon Cloud Search and use 0 instead of 1 as the first page number
+          #   if %w(asset.cloudsearch asset.cloudadvancedsearch asset.search asset.advancedsearch).include? api_method_name.downcase
+          #     page_number = 0
+          #     pageoffset = 1
+          #   else
+          #     page_number = 1
+          #     pageoffset = 0
+          #   end
+          # else
+          #   page_number += 1
+          # end
+          #_request.api_method_arguments[:page] = page_number
+
+          page_number = _request.api_method_arguments[:page]
+          page_number += 1
           get_page(page_number)
         end
 
