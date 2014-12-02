@@ -60,7 +60,7 @@ assets = if (cache_file_path and File.exists?(cache_file_path)) then
            YAML.load(File.read(cache_file_path))
          else
            search_string = options[:search_string]
-           _assets       = search_string ? reporter.get_assets_using_search_string(search_string) : reporter.get_assets_by_project
+           _assets       = search_string ? reporter.get_assets_using_search_string(search_string, :include_metadata => true) : reporter.get_assets_by_project
            File.open(cache_file_path, 'w') { |f| f.write(YAML.dump(_assets)) } if cache_file_path
            _assets
          end
