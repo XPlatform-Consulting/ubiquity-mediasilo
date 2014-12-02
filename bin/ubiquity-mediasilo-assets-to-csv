@@ -1,8 +1,11 @@
 #!/usr/bin/env ruby
 $LOAD_PATH.unshift(File.expand_path('../../lib', __FILE__))
+require 'csv'
+require 'yaml'
 #require 'pp'
 
 require 'ubiquity/mediasilo/api/utilities/cli'
+require 'ubiquity/mediasilo/reporter'
 
 LOGGING_LEVELS = {
   :debug => Logger::DEBUG,
@@ -44,200 +47,27 @@ cli = Ubiquity::MediaSilo::API::Utilities::CLI.new(options)
 @logger = options[:logger] = cli.initialize_logger(options)
 def logger; @logger end
 
-#@ms = Ubiquity::MediaSilo.new(options)
-#@ms = Ubiquity::MediaSilo::API.new(options)
-#@ms = Ubiquity::MediaSilo::API::Utilities.new(cli.initial_args)
 @ms = cli.initialize_api(cli.initial_args)
 def ms; @ms end
-#ms.logger.level = Logger::DEBUG
-#ms.connect
 
-require 'csv'
-require 'yaml'
-def get_assets_using_search_string(search_string)
-#response = ms.asset_advanced_search("( and metadatakeys:'Module ID' (and datecreated:1398211200..1403654400) )", { 'page' => -1, 'searchGlobal' => true }, { :add_folder_crumbs_as_hash => true })
-#response = ms.asset_advanced_search("( and metadatakeys:'Module ID' (and datecreated:1398211200..) )", { 'page' => 1, 'searchGlobal' => true }, { :add_folder_crumbs_as_hash => true })
-  #response = ms.asset_advanced_search("( and metadatakeys:'Module ID' (and datecreated:1398211200..) )", { 'page' => -1 }, { :add_folder_crumbs_as_hash => true })
-  response = ms.asset_advanced_search(search_string, { 'page' => -1 }, { :add_folder_crumbs_as_hash => true })
-  assets = response['ASSETS']
-  assets.map! { |asset| asset['metadata'] = ms.metadata_get_by_asset_uuid(asset['uuid']); asset }
-end
-
-def get_all_assets_for_folder(project_id, folder, options = { })
-  include_sub_folders = options[:include_subfolders]
-  folder_id = folder['FOLDERID']
-
-
-  folder_assets = ms.asset_get_by_folder_id(folder_id, options)
-  return [ ] unless folder_assets
-  assets = folder_assets.dup
-
-  if options[:include_search_data]
-    parent_search_data = options[:search_data] || { 'workspaceid' => project_id, 'foldercrumbs' => [ ] }
-
-    folder_name = folder['FOLDERNAME']
-    folder_crumb = { folder_id => folder_name }
-
-    search_data = parent_search_data.dup
-    search_data['foldercrumbs'] << folder_crumb
-    options[:search_data] = search_data
-    assets.map { |asset| asset['searchdata'] = search_data }
-  end
-
-  if include_sub_folders
-    folders = ms.folder_get_by_parent_id(project_id, folder_id)
-    folders.each { |_folder| assets += get_all_assets_for_folder(project_id, _folder, options) }
-  end
-  assets
-end
-
-def get_all_assets_for_project(project, options = { })
-  include_sub_folders = options[:include_sub_folders]
-
-  project_id = project['PROJECTID']
-  project_name = project['NAME']
-
-  project_assets = ms.asset_get_by_project_id(project_id, options)
-  return [ ] unless ms.success?
-  assets = project_assets.dup
-
-  if options[:include_search_data]
-    search_data = { 'workspaceid' => project_id.to_s, 'workspacename' => project_name, 'folderid' => '0', 'foldername' => '', 'foldercrumbs' => [ { project_id => project_name } ] }
-    assets.map { |asset| asset['searchdata'] = search_data }
-    options[:search_data] = search_data.dup
-  end
-
-  if include_sub_folders
-    folders = ms.folder_get_by_parent_id(project_id, 0)
-    folders.each { |folder| assets += get_all_assets_for_folder(project_id, folder, options) }
-  end
-
-  # assets.map! do |asset|
-  #   search_data = asset['searchdata']
-  #   foldercrumbs = search_data['foldercrumbs']
-  #   folder_crumbs_as_hash = Hash[ foldercrumbs.map { |foldercrumb| foldercrumb.first }  ]
-  #   #folder_crumbs_as_hash = Hash[ foldercrumbs.keys.zip(foldercrumbs.values) ]
-  #   search_data['folder_crumbs_as_hash'] = folder_crumbs_as_hash
-  #   asset['searchdata'] = search_data
-  #   asset
-  # end if options[:include_search_data]
-
-  assets
-end
-
-
-def get_assets(projects = nil)
-  projects ||= begin
-    ms.project_get_all #.last(35) #.map { |project| project['PROJECTID'] }
-  end
-
-  _assets = [ ]
-  [*projects].each { |project|
-    _assets += get_all_assets_for_project(project, :include_search_data => true, :include_sub_folders => true, :page => -1, :pagesize => 200) #, page: 1, pagesize: 1)
-  }
-  _assets
-end
+@reporter = Ubiquity::MediaSilo::Reporter
+def reporter; @reporter end
+reporter.logger = logger
+reporter.ms = ms
 
 cache_file_path = options[:cache_file_path]
-assets = nil
-assets = YAML.load(File.read(cache_file_path)) if cache_file_path and File.exists?(cache_file_path)
-assets ||= begin
-  #ms.connect
-  search_string = options[:search_string]
-  _assets = search_string ? get_assets_using_search_string(search_string) : get_assets
-  File.open(cache_file_path, 'w') { |f| f.write(YAML.dump(_assets)) } if cache_file_path
-  _assets
-end
+assets = if (cache_file_path and File.exists?(cache_file_path)) then
+           YAML.load(File.read(cache_file_path))
+         else
+           search_string = options[:search_string]
+           _assets       = search_string ? reporter.get_assets_using_search_string(search_string) : reporter.get_assets_by_project
+           File.open(cache_file_path, 'w') { |f| f.write(YAML.dump(_assets)) } if cache_file_path
+           _assets
+         end
 
-
-def asset_to_record(_asset)
-  asset = _asset.dup
-  metadata = asset.delete('metadata') { [ ] }
-  file_access = asset.delete('fileaccess') { { } }
-  searchdata = asset.delete('searchdata') { { } }
-  tags = asset.delete('tags') { [ ] }
-
-  project_id = searchdata['workspaceid']
-  project_name = searchdata['workspacename']
-
-  #metadata = ms.metadata_transform_hash(metadata)
-  metadata = Hash[ metadata.map { |cm| [ "metadata:#{cm['key']}", cm['value'] ] } ]
-  foldercrumbs = searchdata['foldercrumbs']
-  folder_crumbs_hash = searchdata['folder_crumbs_as_hash']
-  folder_crumbs_hash ||= Hash[ foldercrumbs.map { |foldercrumb| foldercrumb.first }  ]
-  #folder_crumbs_hash = searchdata.delete('folder_crumbs_as_hash')
-  #puts "Folder Crumbs Hash: #{folder_crumbs_hash}"
-  #pp _asset
-
-  mediasilo_path = "#{folder_crumbs_hash.values.join('\\')}\\#{asset['title']}"
-  stream = file_access.delete('stream')
-  stream = stream ? Hash[ stream.map { |k,v| [ "stream:#{k}", v ] } ] : { }
-
-  asset['tags'] = JSON.generate(tags)
-  asset['mediasilo_path'] = mediasilo_path
-  asset['project_name'] = project_name
-  asset['size_in_bytes'] = asset['size'] * 1000
-  asset.merge!(searchdata)
-  asset.merge!(file_access)
-  asset.merge!(metadata)
-  asset.merge!(stream)
-
-  asset
-end
-
-def assets_to_table(assets)
-  fields = [ ]
-  assets.map! do |asset|
-    _asset = asset_to_record(asset)
-    fields = fields | _asset.keys
-    _asset
-  end
-  fields = fields.sort
-  table = [ fields ] + assets.map { |asset| fields.map { |field_name| asset[field_name] } }
-  table
-end
-
-
-def output_to_csv(data, destination_file_path)
-  logger.info { "Outputting to CSV File. '#{destination_file_path}'" }
-  total_lines = data.length
-  CSV.open(destination_file_path, 'w') { |writer|
-    data.each_with_index do |row, idx|
-      logger.debug { "Writing Row #{idx+1} of #{total_lines}" }
-      writer << row
-    end
-  }
-end
-
-#csv_destination_file_path = File.expand_path('~/Google Drive/tmp/mediasilo_assets.csv')
 csv_destination_file_path = options[:destination_file_path] || '/tmp/mediasilo_assets.csv'
-output_to_csv(assets_to_table(assets.dup), csv_destination_file_path)
+reporter.output_to_csv(reporter.assets_to_table(assets.dup), csv_destination_file_path)
 
-def build_summary(assets)
-  # puts response['TOTAL']
-  abp = {}
-  assets.each do |asset|
-    #puts "Asset (#{asset.class.name}): #{asset.inspect}"
-    searchdata = asset['searchdata']
-    project_id = searchdata['workspaceid']
-    project_name = searchdata['workspacename']
-    folder_crumbs_hash = searchdata['folder_crumbs_as_hash']
-
-    project = abp["#{project_name} (#{project_id})"] ||= [ ]
-
-    project << asset
-    #project << asset['title']
-    #project << "#{asset['uuid'].ljust(30)} | #{"#{folder_crumbs_hash.values.join('\\')}\\#{asset['title']}".ljust(91)} | #{asset['filename'].ljust(70)} | #{asset['datecreated'].ljust(26)} | #{asset['datemodified']}"
-  end
-  #pp abp
-  abp.sort.map { |pn, assets| puts "#{pn.ljust(45)} :\n#{assets.join("\n")}" }
-  #abp.sort.map { |pn, assets| puts "#{pn.ljust(45)} :\n#{assets.sort.join("\n")}" }
-  abp.sort.map { |pn, assets| puts "#{pn.ljust(70)} : #{assets.length}" } # Count By Project Name
-  #total = response['TOTAL']
-  #puts total
-  #pp assets
-
-end
 
 
 
