@@ -62,7 +62,21 @@ Usage: ubiquity-mediasilo [options]
   - tags_to_add_to_asset [Array] An array of tag names to add to the asset
   - tags_to_remove_from_asset [Array] An array of tag names to remove from the asset 
   - add_quicklink_to_asset [Boolean|Hash|Array]
-  
+
+###### Path Delete
+
+ - Delete Project and Project Contents
+./ubiquity-mediasilo --mediasilo-hostname hostname --mediasilo-username username --mediasilo-password password --method-name path_delete --method-arguments '["/projectname", { "include_assets":true, "recursive":true }]'
+
+ - Delete Project Contents
+./ubiquity-mediasilo --mediasilo-hostname hostname --mediasilo-username username --mediasilo-password password --method-name path_delete --method-arguments '["/projectname/*", { "include_assets":true, "recursive":true }]'
+
+ - Delete Folder and Folder Contents
+./ubiquity-mediasilo --mediasilo-hostname hostname --mediasilo-username username --mediasilo-password password --method-name path_delete --method-arguments '["/projectname/foldername/*", { "include_assets":true, "recursive":true }]'
+
+ - Delete Folder Contents
+./ubiquity-mediasilo --mediasilo-hostname hostname --mediasilo-username username --mediasilo-password password --method-name path_delete --method-arguments '["/projectname/foldername", { "include_assets":true, "recursive":true }]'
+
 ## MediaSilo Assets to CSV Executable [bin/ubiquity-mediasilo-assets-to-csv](./bin/ubiquity-mediasilo-assets-to-csv)
 An executable that allows for the exporting of asset details into CSV
  
