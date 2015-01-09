@@ -65,19 +65,21 @@ module Ubiquity
           def run(args = initial_args)
             method_name = args[:method_name]
             raise ArgumentError, ':method_name is a required argument.' unless method_name
+            method_name = method_name.to_sym
 
             method_arguments = args[:method_arguments]
-            if method_arguments
-              method_arguments = JSON.parse(method_arguments) if method_arguments.is_a?(String) and method_arguments.start_with?('{', '[')
-              method_arguments = Hash[method_arguments.map { |k,v| k = k.to_sym if k.respond_to?(:to_sym); [ k, v ] }] if method_arguments.is_a?(Hash)
-            end
+            method_arguments = JSON.parse(method_arguments, :symbolize_names => true) if method_arguments.is_a?(String) and method_arguments.start_with?('{', '[')
 
             initialize_api(args)
 
-            response = case method_name.to_sym
+            response = case method_name
               when :asset_create; asset_create(method_arguments)
               when :asset_edit; asset_edit(method_arguments)
               when :asset_create_using_path; asset_create_using_path(method_arguments)
+              else
+                send_arguments = [ method_name ]
+                send_arguments.concat method_arguments.is_a?(Array) ? [*method_arguments] : [method_arguments] if method_arguments
+                api.__send__(*send_arguments) if api.respond_to?(method_name)
             end
             abort("Error: #{response.error_message}") if response.respond_to?(:success?) and !response.success?
             abort("Error: #{api.error_message}") unless api.success?
