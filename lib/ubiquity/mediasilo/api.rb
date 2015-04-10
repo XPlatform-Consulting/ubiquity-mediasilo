@@ -825,6 +825,21 @@ module Ubiquity
         call_method('User.Edit', params)
       end
 
+      def user_get_all(args = { })
+        params = { }
+        add_params = [ :adminbool ]
+
+        args_out = merge_additional_parameters(params, add_params, args)
+        call_method('User.GetAll', args_out)
+      end
+
+      def user_get_by_project_id(project_id)
+        params = {
+          :projectid => project_id
+        }
+        call_method('User.GetByProjectID', params)
+      end
+
       # Authenticates and logs the corresponding user into MediaSilo, a session key is returned that can be used to
       #   retrieve other data
       #
