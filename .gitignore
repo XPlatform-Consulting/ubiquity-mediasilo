@@ -2,9 +2,9 @@
 *.rbc
 .bundle
 .config
-bin/dev/
 bin/*_option
 coverage
+dev
 InstalledFiles
 lib/bundler/man
 pkg
